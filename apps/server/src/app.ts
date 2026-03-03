@@ -59,6 +59,8 @@ function buildApp({ auth, characterService, chatService, providerService, fluxSe
     .use('*', bodyLimit({ maxSize: 1024 * 1024 }))
     .onError((err, c) => {
       if (err instanceof ApiError) {
+        logger.withError(err).warn('API error occurred')
+
         return c.json({
           error: err.errorCode,
           message: err.message,
