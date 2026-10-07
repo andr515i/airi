@@ -36,8 +36,11 @@ const providerConfig = computed(() => {
 const hasWebGPU = ref(false)
 const fp16Supported = ref(false)
 
-// Track voices loading state
+// Track voices/model loading state. Keep the final "loaded" state visible so
+// local-model initialization is explicit instead of silently disappearing.
 const voicesLoading = ref(false)
+const modelLoadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const modelLoadError = ref('')
 
 // Get provider models from store
 const providerModels = computed(() => {
@@ -71,6 +74,22 @@ const modelOptions = computed(() => {
     value: m.id,
   }))
 })
+
+async function loadKokoroModel(configSnapshot: Record<string, any>) {
+  modelLoadState.value = 'loading'
+  modelLoadError.value = ''
+
+  try {
+    await providersStore.loadProviderModel(providerId, configSnapshot)
+    await speechStore.loadVoicesForProvider(providerId)
+    modelLoadState.value = 'ready'
+  }
+  catch (error) {
+    modelLoadState.value = 'error'
+    modelLoadError.value = error instanceof Error ? error.message : String(error)
+    throw error
+  }
+}
 
 // Generate speech with Kokoro-specific parameters
 async function handleGenerateSpeech(input: string, voiceId: string, _useSSML: boolean) {
@@ -127,10 +146,7 @@ onMounted(async () => {
     const configSnapshot = cloneDeep(config)
     const validationResult = await providersStore.validateProviderConfig(providerId, configSnapshot)
     if (validationResult.valid) {
-      // Load the initial model
-      await providersStore.loadProviderModel(providerId, configSnapshot)
-
-      await speechStore.loadVoicesForProvider(providerId)
+      await loadKokoroModel(configSnapshot)
     }
     else {
       console.error('Failed to validate Kokoro provider config', config, validationResult)
@@ -153,11 +169,7 @@ watch(model, async (newValue) => {
       const validationResult = await providersStore.validateProviderConfig(providerId, configSnapshot)
 
       if (validationResult.valid) {
-        // Load the model using the capability with progress tracking
-        await providersStore.loadProviderModel(providerId, configSnapshot)
-
-        // Then reload voices
-        await speechStore.loadVoicesForProvider(providerId)
+        await loadKokoroModel(configSnapshot)
       }
     }
     catch (error) {
@@ -190,6 +202,23 @@ watch(model, async (newValue) => {
             :disabled="modelsLoading"
             placeholder="Choose a model..."
           />
+        </div>
+
+        <div
+          v-if="modelLoadState !== 'idle'"
+          class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm"
+          :class="{
+            'bg-amber-500/10 text-amber-600 dark:text-amber-400': modelLoadState === 'loading',
+            'bg-green-500/10 text-green-600 dark:text-green-400': modelLoadState === 'ready',
+            'bg-red-500/10 text-red-600 dark:text-red-400': modelLoadState === 'error',
+          }"
+        >
+          <div v-if="modelLoadState === 'loading'" i-svg-spinners:pulse-ring />
+          <div v-else-if="modelLoadState === 'ready'" i-solar:check-circle-bold-duotone />
+          <div v-else i-solar:danger-circle-bold-duotone />
+          <span v-if="modelLoadState === 'loading'">Model loading...</span>
+          <span v-else-if="modelLoadState === 'ready'">Model loaded.</span>
+          <span v-else>Model failed to load: {{ modelLoadError }}</span>
         </div>
       </div>
     </template>
