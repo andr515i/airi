@@ -63,6 +63,22 @@ function progressInfo(progress: { file?: string, percent: number, loaded?: numbe
 
 let lastLoadedModelId: string | null = null
 
+/**
+ * Kokoro's worker/model state is local to each renderer. AIRI can invoke provider
+ * actions from a different renderer than the one that originally loaded the model,
+ * so every speech-capable renderer must be able to lazily prepare its own adapter.
+ */
+async function ensureModelLoaded(modelId: string) {
+  const adapter = await getKokoroAdapter()
+  if (adapter.state === 'ready' && lastLoadedModelId === modelId)
+    return adapter
+
+  const model = assertModelSupported(modelId)
+  await adapter.loadModel(model.quantization, model.platform)
+  lastLoadedModelId = modelId
+  return adapter
+}
+
 export const providerKokoroLocal = defineProvider({
   id: 'kokoro-local',
   name: 'Kokoro TTS',
@@ -79,8 +95,8 @@ export const providerKokoroLocal = defineProvider({
       voiceId: z.string().default(''),
     })
   },
-  createProvider() {
-    const adapterPromise = getKokoroAdapter()
+  createProvider(config) {
+    const modelId = config.model || getDefaultKokoroModel(getWebGpuState().supported, getWebGpuState().fp16Supported)
     return {
       speech: () => ({
         baseURL: 'http://kokoro-local/v1/',
@@ -94,7 +110,7 @@ export const providerKokoroLocal = defineProvider({
             throw new Error('Voice parameter is required')
 
           try {
-            const adapter = await adapterPromise
+            const adapter = await ensureModelLoaded(modelId)
             if (!(body.voice in adapter.getVoices()))
               throw new Error(`Unknown Kokoro voice: ${body.voice}`)
             const buffer = await adapter.generate(body.input ?? '', body.voice as VoiceKey)
@@ -147,6 +163,7 @@ export const providerKokoroLocal = defineProvider({
         await adapter.loadModel(model.quantization, model.platform, {
           onProgress: hooks?.onProgress ? progress => hooks.onProgress?.(progressInfo(progress)) : undefined,
         })
+        lastLoadedModelId = config.model
       }
       catch (error) {
         console.error('Failed to load Kokoro model:', error)
@@ -156,12 +173,7 @@ export const providerKokoroLocal = defineProvider({
     voiceCatalogConfig: ({ model }) => ({ model }),
     listVoices: async (config) => {
       try {
-        const adapter = await getKokoroAdapter()
-        if (adapter.state !== 'ready' || config.model !== lastLoadedModelId) {
-          const model = assertModelSupported(config.model)
-          await adapter.loadModel(model.quantization, model.platform)
-          lastLoadedModelId = config.model
-        }
+        const adapter = await ensureModelLoaded(config.model)
 
         return Object.entries(adapter.getVoices() as Record<string, KokoroVoice>).map(([id, voice]) => {
           const languageCode = voice.language.toLowerCase()
